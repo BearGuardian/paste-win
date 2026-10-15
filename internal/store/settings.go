@@ -108,7 +108,9 @@ func normalize(v model.Settings) model.Settings {
 	if v.MaxItems > 100000 {
 		v.MaxItems = 100000
 	}
-	if v.PanelHeight < 120 {
+	// 上下限与 app.go 的 minPanelLogicalHeight / maxPanelLogicalHeight 一致。
+	// 低于下限说明配置损坏(而不是用户故意拖小),回退出厂值。
+	if v.PanelHeight < 160 {
 		v.PanelHeight = def.PanelHeight
 	}
 	if v.PanelHeight > 900 {

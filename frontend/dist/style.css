@@ -47,6 +47,7 @@ html, body {
 }
 
 #panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -56,6 +57,40 @@ html, body {
   border-top: 1px solid var(--border-strong);
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   overflow: hidden;
+}
+
+/* ------------------------------------------------------ 拖拽改高的把手 */
+
+/* 高度刻意压到 12px:顶栏的内边距正好是 12px,把手只盖住这段留白,
+   不会挡住下面的 Pinboard 标签。 */
+#resize-grip {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 12px;
+  cursor: ns-resize;
+  /* 顶栏整条是窗口拖拽区,把手要自己排除掉,否则按下变成拖窗口 */
+  --wails-draggable: no-drag;
+}
+
+#resize-grip span {
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.3);
+  transition: background 120ms ease, width 120ms ease;
+}
+
+#resize-grip:hover span,
+#resize-grip.active span {
+  width: 76px;
+  background: rgba(255, 255, 255, 0.7);
 }
 
 /* ---------------------------------------------------------------- 顶栏 */

@@ -23,7 +23,58 @@ var (
 	procGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
 	procGetCurrentThreadId       = kernel32.NewProc("GetCurrentThreadId")
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
+	procGetWindowRect            = user32.NewProc("GetWindowRect")
+	procSetWindowPos             = user32.NewProc("SetWindowPos")
 )
+
+// SWP_NOZORDER / SWP_NOACTIVATE:只改几何,不动 Z 序、不抢焦点。
+// 面板是靠热键唤出的,改尺寸时抢焦点会把用户正在输入的目标窗口顶掉。
+const (
+	swpNoZOrder   = 0x0004
+	swpNoActivate = 0x0010
+)
+
+// SetWindowBounds 把窗口**外框**放到屏幕绝对坐标的 (x, y, w, h)。
+//
+// 必须绕过 Wails 的 runtime.WindowSetSize / WindowSetPosition ——
+// 这两个方法在 Windows 后端上都不能用来做多屏绝对定位,见 DESIGN.md 8.16:
+//
+//   - WindowSetSize 会把尺寸再乘一遍"窗口当前所在显示器"的 DPI 缩放,
+//     在 125% 的屏幕上 1920 会变成 2400;
+//   - WindowSetPosition 把 (x, y) 当成相对**窗口当前所在显示器工作区**
+//     左上角的偏移,而不是屏幕绝对坐标。
+//
+// 本进程声明了 permonitorv2,SetWindowPos 收发的都是物理像素,不做任何换算。
+func SetWindowBounds(hwnd uintptr, x, y, w, h int) error {
+	if hwnd == 0 || !IsWindow(hwnd) {
+		return fmt.Errorf("窗口句柄无效: %d", hwnd)
+	}
+	if w <= 0 || h <= 0 {
+		return fmt.Errorf("窗口尺寸非法: %d×%d", w, h)
+	}
+	ret, _, callErr := procSetWindowPos.Call(hwnd, 0,
+		uintptr(int32(x)), uintptr(int32(y)), uintptr(int32(w)), uintptr(int32(h)),
+		swpNoZOrder|swpNoActivate)
+	if ret == 0 {
+		return fmt.Errorf("SetWindowPos 失败: %w", callErr)
+	}
+	return nil
+}
+
+// WindowRect 返回窗口在屏幕坐标系里的矩形(物理像素)。
+//
+// 用来回读"我设的尺寸/位置到底生效了没有" —— 不回读就无法区分
+// "算错了"和"还没生效"。
+func WindowRect(hwnd uintptr) (RECT, error) {
+	if hwnd == 0 || !IsWindow(hwnd) {
+		return RECT{}, fmt.Errorf("窗口句柄无效: %d", hwnd)
+	}
+	var r RECT
+	if ret, _, callErr := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); ret == 0 {
+		return RECT{}, fmt.Errorf("GetWindowRect 失败: %w", callErr)
+	}
+	return r, nil
+}
 
 // GetForegroundWindow 返回当前前台窗口句柄。
 func GetForegroundWindow() uintptr {
@@ -115,6 +166,7 @@ func FindWindowByTitle(title string) uintptr {
 //     共享输入状态后本线程即被视为前台。
 //     **只挂对方,不能连自己的窗口线程一起挂** —— 把本进程的消息线程
 //     也拉进输入队列共享,SetForegroundWindow 反而会失败。这个坑实测踩过。
+//
 // foregroundSettle 是等待前台切换落定的时长。
 //
 // 前台切换是**异步**的:SetForegroundWindow 返回时,系统只是把激活请求

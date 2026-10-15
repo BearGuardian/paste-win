@@ -8,6 +8,10 @@
 </head>
 <body>
   <div id="panel">
+    <!-- 拖拽把手:面板贴屏幕底边,所以只能改高度。没有这个可见的把手,
+         用户根本不知道面板可以调整大小。 -->
+    <div id="resize-grip" title="拖动调整面板高度" aria-hidden="true"><span></span></div>
+
     <header id="topbar">
       <div id="search-wrap">
         <svg id="search-icon" viewBox="0 0 16 16" aria-hidden="true">
@@ -89,7 +93,7 @@
 
       <label class="field">
         <span>面板高度(像素)</span>
-        <input id="set-panelheight" type="number" min="120" max="900" />
+        <input id="set-panelheight" type="number" min="160" max="900" />
       </label>
 
       <label class="field checkbox">

@@ -48,6 +48,8 @@ type App struct {
 	hotkeyID    int
 	prevTarget  winapi.FocusTarget // 唤起面板前的焦点目标(窗口+控件),回贴时还原
 	panelShown  bool
+	resizing    bool        // 正在拖拽改高,期间不接受新的拖拽
+	panelBounds winapi.RECT // 最近一次由 ShowPanel 设下去的物理矩形,用于判断用户是否改过大小
 	tray        *tray.Tray
 	quitting    atomic.Bool // 见 Quit():用于让 OnBeforeClose 放行真正的退出
 	cleanupOnce sync.Once
@@ -278,20 +280,14 @@ func (a *App) ShowPanel() {
 	height := a.settings.PanelHeight
 	a.mu.Unlock()
 
-	area, err := winapi.WorkAreaAtCursor()
+	mon, err := winapi.MonitorAtCursor()
 	if err != nil {
-		log.Printf("获取显示器工作区失败,回退到屏幕底部: %v", err)
+		log.Printf("获取显示器工作区失败,回退到主屏: %v", err)
 	}
 
 	if a.ctx != nil {
 		if err == nil {
-			w := int(area.Width())
-			h := height
-			if h > int(area.Height()) {
-				h = int(area.Height())
-			}
-			runtime.WindowSetSize(a.ctx, w, h)
-			runtime.WindowSetPosition(a.ctx, int(area.Left), int(area.Bottom)-h)
+			a.applyPanelGeometry(mon, height)
 		}
 		runtime.WindowShow(a.ctx)
 		runtime.WindowSetAlwaysOnTop(a.ctx, true)
@@ -307,6 +303,235 @@ func (a *App) ShowPanel() {
 			a.prevTarget.Focus, winapi.ClassName(a.prevTarget.Focus),
 			winapi.GetForegroundWindow())
 	}
+}
+
+// applyPanelGeometry 把面板摆到 mon 这块显示器的底部。
+//
+// logicalHeight 是**逻辑像素**高度(用户设的偏好),乘上该显示器的缩放
+// 换算成物理像素,这样面板在 100% 和 125% 的屏幕上看起来一样高。
+// 宽度则直接用工作区的物理宽度铺满,不做缩放 —— 缩放会让面板越过屏幕边缘。
+func (a *App) applyPanelGeometry(mon winapi.Monitor, logicalHeight int) {
+	hwnd := winapi.FindWindowByTitle(mainWindowTitle)
+	if hwnd == 0 {
+		log.Printf("未能按标题找到主窗口,面板无法定位")
+		return
+	}
+
+	w := int(mon.Work.Width())
+	h := int(float64(logicalHeight)*mon.Scale() + 0.5)
+	if h > int(mon.Work.Height()) {
+		h = int(mon.Work.Height())
+	}
+	x := int(mon.Work.Left)
+	y := int(mon.Work.Bottom) - h
+
+	if err := winapi.SetWindowBounds(hwnd, x, y, w, h); err != nil {
+		log.Printf("面板定位失败: %v", err)
+		return
+	}
+	log.Printf("面板几何: 工作区 %d,%d → %d,%d(%d×%d) 缩放 %.2f 逻辑高 %d → 物理 %d×%d @%d,%d",
+		mon.Work.Left, mon.Work.Top, mon.Work.Right, mon.Work.Bottom,
+		mon.Work.Width(), mon.Work.Height(), mon.Scale(), logicalHeight, w, h, x, y)
+	a.logPanelRect()
+
+	// 面板跨到缩放比例不同的显示器上时,Windows 会补一条 WM_DPICHANGED,
+	// 而 Wails 会照单全收它建议的矩形(windows/window.go 的 0x02E0 分支)——
+	// 那个建议值是按新旧 DPI 之比缩放出来的,会把我们算好的物理尺寸改掉:
+	// 1920×280 从 125% 的屏挪到 100% 的屏上会变成 1536×224。
+	// 这条消息是异步到的,只能等它落地后回读校验、不符再纠一次。
+	want := winapi.RECT{Left: int32(x), Top: int32(y), Right: int32(x + w), Bottom: int32(y + h)}
+	a.mu.Lock()
+	a.panelBounds = want
+	a.mu.Unlock()
+	go a.settlePanelBounds(hwnd, want)
+}
+
+// settlePanelBounds 回读面板矩形,被 WM_DPICHANGED 改掉就重新设回去。
+//
+// 放在 goroutine 里:面板已经显示出来了,纠偏晚一两帧用户看不出来,
+// 但同步等会让每次唤起都卡一下。
+func (a *App) settlePanelBounds(hwnd uintptr, want winapi.RECT) {
+	for i := 0; i < panelSettleTries; i++ {
+		time.Sleep(panelSettleInterval)
+
+		// 用户可能已经把面板收起来了,别再动窗口
+		a.mu.Lock()
+		shown := a.panelShown
+		a.mu.Unlock()
+		if !shown {
+			return
+		}
+
+		got, err := winapi.WindowRect(hwnd)
+		if err != nil {
+			return
+		}
+		if got == want {
+			return
+		}
+		if err := winapi.SetWindowBounds(hwnd,
+			int(want.Left), int(want.Top), int(want.Width()), int(want.Height())); err != nil {
+			log.Printf("面板几何: 纠偏失败 %v", err)
+			return
+		}
+		log.Printf("面板几何: 被 WM_DPICHANGED 改成 %d,%d → %d,%d(%d×%d),已纠回",
+			got.Left, got.Top, got.Right, got.Bottom, got.Width(), got.Height())
+	}
+	log.Printf("面板几何: 纠偏 %d 次仍未稳定,放弃", panelSettleTries)
+}
+
+// StartPanelResize 开始一次"拖拽面板上边缘改高"。
+//
+// 由前端在按下顶部把手时调用,返回时拖拽已结束。
+// 整个拖拽在 Go 侧轮询鼠标左键状态完成,而不是每次 mousemove 都过一次
+// JS↔Go 桥 —— 后者在拖拽这种高频场景下会明显发涩。
+//
+// 面板贴屏幕底边,所以高度就是"工作区底边 - 光标 Y"。拖拽期间光标可能
+// 甩出工作区,按边界钳住即可,不需要中断。
+func (a *App) StartPanelResize() {
+	a.mu.Lock()
+	if a.resizing {
+		a.mu.Unlock()
+		return
+	}
+	a.resizing = true
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		a.resizing = false
+		a.mu.Unlock()
+	}()
+
+	hwnd := winapi.FindWindowByTitle(mainWindowTitle)
+	if hwnd == 0 {
+		return
+	}
+	mon, err := winapi.MonitorOfWindow(hwnd)
+	if err != nil {
+		log.Printf("拖拽改高: 取显示器失败 %v", err)
+		return
+	}
+
+	scale := mon.Scale()
+	bottom := int(mon.Work.Bottom)
+	x := int(mon.Work.Left)
+	width := int(mon.Work.Width())
+
+	minH := int(float64(minPanelLogicalHeight)*scale + 0.5)
+	maxH := int(float64(maxPanelLogicalHeight)*scale + 0.5)
+	if maxH > int(mon.Work.Height()) {
+		maxH = int(mon.Work.Height())
+	}
+
+	for winapi.IsLeftButtonDown() {
+		_, cy, err := winapi.CursorPos()
+		if err != nil {
+			break
+		}
+		h := bottom - int(cy)
+		if h < minH {
+			h = minH
+		}
+		if h > maxH {
+			h = maxH
+		}
+		if err := winapi.SetWindowBounds(hwnd, x, bottom-h, width, h); err != nil {
+			log.Printf("拖拽改高: 设置窗口失败 %v", err)
+			break
+		}
+		time.Sleep(resizePollInterval)
+	}
+
+	// 落库时换算回逻辑像素,这样换到别的缩放比例的显示器上高度观感一致
+	r, err := winapi.WindowRect(hwnd)
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	a.panelBounds = r
+	a.mu.Unlock()
+	logical := int(float64(r.Height())/scale + 0.5)
+	a.savePanelHeight(logical)
+}
+
+// savePanelHeight 记录用户拖出来的面板高度(逻辑像素)。
+//
+// 高度是用户偏好,必须落库 —— 否则每次重新呼出面板都会被
+// ShowPanel 按旧值重置回去,用户会觉得"调了等于没调"。
+func (a *App) savePanelHeight(logical int) {
+	a.mu.Lock()
+	if a.settings.PanelHeight == logical {
+		a.mu.Unlock()
+		return
+	}
+	next := a.settings
+	next.PanelHeight = logical
+	a.settings = next
+	a.mu.Unlock()
+
+	if err := a.store.SaveSettings(next); err != nil {
+		log.Printf("保存面板高度失败: %v", err)
+		return
+	}
+	log.Printf("面板高度已保存: %d(逻辑像素)", logical)
+}
+
+// persistPanelHeight 把面板当前的实际高度写回配置。
+//
+// 兜底用:用户也可能直接拖窗口边框改高(无边框窗口仍带 WS_THICKFRAME),
+// 那条路径不经过 StartPanelResize。
+//
+// **只在矩形确实变过时才保存**。无条件回读并落库会形成"垃圾进垃圾出":
+// 窗口尺寸在跨显示器时可能被 WM_DPICHANGED 短暂改坏,一旦被当成用户偏好
+// 存下来,之后每次唤起都会按这个坏值渲染。
+func (a *App) persistPanelHeight() {
+	hwnd := winapi.FindWindowByTitle(mainWindowTitle)
+	if hwnd == 0 {
+		return
+	}
+
+	a.mu.Lock()
+	applied := a.panelBounds
+	a.mu.Unlock()
+	if applied == (winapi.RECT{}) {
+		// 本次还没定位过,没有可比对的基准
+		return
+	}
+
+	r, err := winapi.WindowRect(hwnd)
+	if err != nil || r == applied {
+		return
+	}
+
+	mon, err := winapi.MonitorOfWindow(hwnd)
+	if err != nil {
+		return
+	}
+	scale := mon.Scale()
+	if scale <= 0 {
+		return
+	}
+	a.savePanelHeight(int(float64(r.Height())/scale + 0.5))
+}
+
+// logPanelRect 回读面板的实际窗口矩形并打日志。
+//
+// SetWindowPos 是同步的,调用返回即可读到新值;这一步是为了在日志里留下
+// "实际摆到哪儿了"的证据 —— 多屏 + 混合缩放下出问题时,这是唯一能区分
+// "算错了"和"没生效"的东西。
+func (a *App) logPanelRect() {
+	hwnd := winapi.FindWindowByTitle(mainWindowTitle)
+	if hwnd == 0 {
+		return
+	}
+	r, err := winapi.WindowRect(hwnd)
+	if err != nil {
+		log.Printf("面板几何: 回读失败 %v", err)
+		return
+	}
+	log.Printf("面板几何: 实际 %d,%d → %d,%d(%d×%d)",
+		r.Left, r.Top, r.Right, r.Bottom, r.Width(), r.Height())
 }
 
 // focusPanel 把 PasteWin 主窗口提到前台并交出键盘焦点。
@@ -374,6 +599,9 @@ func (a *App) hidePanelWindow() bool {
 		runtime.WindowHide(a.ctx)
 		runtime.EventsEmit(a.ctx, "panel:hidden")
 		log.Printf("面板已收起")
+		// 收起时统一回读高度:拖把手改高走 StartPanelResize,
+		// 但用户也可能直接拖无边框窗口的边框,那条路径不落库。
+		go a.persistPanelHeight()
 	}
 	return true
 }
@@ -724,6 +952,20 @@ const (
 	ocrBackfillPerLaunch = 20
 
 	quitGracePeriod = 1500 * time.Millisecond
+
+	// 面板高度的逻辑像素上下限。必须与 store.normalize 的钳位一致 ——
+	// 两处不一致会出现"拖到极限、重开又弹回"这种自相矛盾的行为。
+	minPanelLogicalHeight = 160
+	maxPanelLogicalHeight = 900
+
+	// resizePollInterval 是拖拽改高时重设窗口的间隔。
+	// 8ms 约合 120Hz,再快也没有意义(屏幕刷不过来)。
+	resizePollInterval = 8 * time.Millisecond
+
+	// 面板跨显示器后对 WM_DPICHANGED 的纠偏重试。
+	// 该消息通常一帧内到,一两轮就稳定;给足余量但不无限重试。
+	panelSettleTries    = 8
+	panelSettleInterval = 25 * time.Millisecond
 )
 
 // Quit 退出应用。

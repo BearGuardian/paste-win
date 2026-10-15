@@ -5,7 +5,24 @@ import (
 	"unsafe"
 )
 
-var procSendInput = user32.NewProc("SendInput")
+var (
+	procSendInput        = user32.NewProc("SendInput")
+	procGetAsyncKeyState = user32.NewProc("GetAsyncKeyState")
+)
+
+// VK_LBUTTON:鼠标左键。
+const vkLButton = 0x01
+
+// IsLeftButtonDown 报告鼠标左键当前是否按下。
+//
+// 用于面板的拖拽改高:前端 mousedown 后由 Go 侧轮询按键状态,
+// 直到用户松手。比每次 mousemove 都过一趟 JS↔Go 桥要顺滑得多。
+//
+// 最高位为 1 表示当前按下(最低位是"自上次调用后是否按过",这里不用)。
+func IsLeftButtonDown() bool {
+	ret, _, _ := procGetAsyncKeyState.Call(vkLButton)
+	return ret&0x8000 != 0
+}
 
 // keybdInput 对应 Win32 的 KEYBDINPUT。
 // x64 下布局:WORD(2) + WORD(2) + DWORD(4) + DWORD(4) + 对齐填充(4) + ULONG_PTR(8) = 24 字节。

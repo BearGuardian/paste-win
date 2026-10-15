@@ -639,6 +639,20 @@
 
     document.addEventListener('keydown', onKeyDown);
 
+    // 拖拽把手改面板高度。整个拖拽在 Go 侧完成(轮询鼠标左键状态),
+    // 这里只负责发起和给出按下反馈 —— 每次 mousemove 过一次 JS↔Go 桥
+    // 会让拖拽明显发涩。
+    const grip = el('resize-grip');
+    grip.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      grip.classList.add('active');
+      clientLog('按下拖拽把手,开始调整高度');
+      bridge.StartPanelResize()
+        .catch(reportError('调整面板高度失败'))
+        .finally(() => grip.classList.remove('active'));
+    });
+
     // 面板失去焦点时自动收起 —— 点桌面、点别的窗口都应当关掉它,
     // 否则面板常驻置顶,只能靠粘贴或 Esc 才能摆脱,很别扭。
     //
