@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/google/uuid v1.6.0
+	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/wailsapp/wails/v2 v2.16.0
 	golang.org/x/image v0.47.0
 	golang.org/x/sys v0.49.0

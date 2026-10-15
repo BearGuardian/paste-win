@@ -21,6 +21,7 @@ import (
 	"pastewin/internal/exclusion"
 	"pastewin/internal/hotkey"
 	"pastewin/internal/model"
+	"pastewin/internal/ocr"
 	"pastewin/internal/paster"
 	"pastewin/internal/store"
 	"pastewin/internal/tray"
@@ -50,9 +51,16 @@ type App struct {
 	tray        *tray.Tray
 	quitting    atomic.Bool // 见 Quit():用于让 OnBeforeClose 放行真正的退出
 	cleanupOnce sync.Once
+
+	// 后台 OCR。引擎为 nil 表示本机不可用,整条链路关闭。
+	ocrEngine *ocr.Engine
+	ocrQueue  chan store.PendingOCR
+	ocrStop   chan struct{}
+	ocrWG     sync.WaitGroup
 }
 
 // NewApp 构造绑定层。依赖由 main 组装后注入,便于测试时替换。
+// ocrEngine 可为 nil,表示本机没有可用的 OCR 引擎。
 func NewApp(
 	st *store.Store,
 	bl *blobs.Store,
@@ -62,16 +70,20 @@ func NewApp(
 	mw *winapi.MessageWindow,
 	ex *exclusion.List,
 	settings model.Settings,
+	ocrEngine *ocr.Engine,
 ) *App {
 	return &App{
-		store:    st,
-		blobs:    bl,
-		watcher:  w,
-		paster:   p,
-		hotkeys:  hk,
-		msgwin:   mw,
-		excluded: ex,
-		settings: settings,
+		store:     st,
+		blobs:     bl,
+		watcher:   w,
+		paster:    p,
+		hotkeys:   hk,
+		msgwin:    mw,
+		excluded:  ex,
+		settings:  settings,
+		ocrEngine: ocrEngine,
+		ocrQueue:  make(chan store.PendingOCR, 256),
+		ocrStop:   make(chan struct{}),
 	}
 }
 
@@ -101,6 +113,119 @@ func (a *App) Startup(ctx context.Context) {
 		log.Printf("注册全局热键失败: %v", err)
 		a.emitError(fmt.Sprintf("热键 %s 注册失败,可能已被其他程序占用", a.settings.Hotkey))
 	}
+
+	a.startOCRWorker()
+}
+
+// ---------------------------------------------------------------- 后台 OCR
+
+// startOCRWorker 启动 OCR 工作协程,并把历史图片排进队列。
+func (a *App) startOCRWorker() {
+	if a.ocrEngine == nil {
+		log.Println("OCR: 本机没有可用引擎,图片文字搜索不可用")
+		return
+	}
+
+	a.ocrWG.Add(1)
+	go func() {
+		defer a.ocrWG.Done()
+		for {
+			select {
+			case <-a.ocrStop:
+				return
+			case job := <-a.ocrQueue:
+				a.runOCR(job)
+			}
+		}
+	}()
+
+	// 识别流水线升级后,已识别过的图片要用新流水线重做一遍 ——
+	// 老结果停在旧质量上(比如加入放大前的识别结果会把「陈」拆成「阝东」)。
+	// 用版本标记而不是"每次启动都重做":后者等于每次开机重跑几十个
+	// PowerShell 进程。
+	cur, _, err := a.store.Meta(ocrPipelineKey)
+	if err != nil {
+		log.Printf("OCR: 读取流水线版本失败: %v", err)
+	} else if cur != ocr.PipelineVersion {
+		n, err := a.store.ResetOCR()
+		if err != nil {
+			log.Printf("OCR: 重置识别状态失败: %v", err)
+		} else {
+			if n > 0 {
+				log.Printf("OCR: 流水线已更新(%s → %s),%d 张图片将重新识别",
+					orDash(cur), ocr.PipelineVersion, n)
+			}
+			if err := a.store.SetMeta(ocrPipelineKey, ocr.PipelineVersion); err != nil {
+				log.Printf("OCR: 写入流水线版本失败: %v", err)
+			}
+		}
+	}
+
+	// 历史图片补做。只取一批:剩下的等下次启动继续,避免开机瞬间
+	// 有几十个 PowerShell 进程排队把机器拖慢。
+	pending, err := a.store.ImagesNeedingOCR(ocrBackfillPerLaunch)
+	if err != nil {
+		log.Printf("OCR: 查询历史图片失败: %v", err)
+		return
+	}
+	for _, job := range pending {
+		a.enqueueOCR(job)
+	}
+	if len(pending) > 0 {
+		log.Printf("OCR: 已排入 %d 张历史图片待识别", len(pending))
+	}
+}
+
+// enqueueOCR 把一张图片投入识别队列。队列满时直接丢弃 ——
+// 识别只是锦上添花,不能因为队列积压就阻塞捕获路径。
+func (a *App) enqueueOCR(job store.PendingOCR) {
+	select {
+	case a.ocrQueue <- job:
+	default:
+		log.Printf("OCR: 队列已满,跳过 %s", job.Path)
+	}
+}
+
+// runOCR 识别一张图片并写回结果。在单个工作协程上串行执行。
+func (a *App) runOCR(job store.PendingOCR) {
+	// 条目可能在排队期间被删掉了,或者用户清空了历史
+	abs, err := a.blobs.Abs(job.Path)
+	if err != nil {
+		log.Printf("OCR: 路径非法 %s: %v", job.Path, err)
+		return
+	}
+
+	text, err := a.ocrEngine.Recognize(a.ctx, abs)
+	if err != nil {
+		if errors.Is(err, ocr.ErrNoEngine) {
+			log.Printf("OCR: 本机没有可用引擎,停止识别")
+			return
+		}
+		// 单张失败不标记 ocr_done,下次启动会重试
+		log.Printf("OCR: 识别 %s 失败: %v", job.Path, err)
+		return
+	}
+
+	if err := a.store.SetOCRText(job.ID, text); err != nil {
+		// 条目很可能已被删除,属于正常情况,不必刷屏
+		log.Printf("OCR: 写回结果失败(%s): %v", job.Path, err)
+		return
+	}
+	log.Printf("OCR: %s 识别出 %d 字", job.Path, len([]rune(text)))
+
+	// 面板可能正开着,让搜索结果实时跟上
+	a.emitItemsChanged()
+}
+
+// stopOCR 停掉工作协程并等它退出。
+func (a *App) stopOCR() {
+	select {
+	case <-a.ocrStop:
+		return // 已经停过
+	default:
+	}
+	close(a.ocrStop)
+	a.ocrWG.Wait()
 }
 
 // Shutdown 在应用退出前调用。与 Quit 的强制退出路径共用同一份清理逻辑。
@@ -591,6 +716,13 @@ const (
 	// focusPollInterval 是等待窗口可见时的轮询间隔。
 	focusPollInterval = 10 * time.Millisecond
 
+	// ocrPipelineKey 是记录当前 OCR 流水线版本的设置键。
+	ocrPipelineKey = "ocr_pipeline_version"
+
+	// ocrBackfillPerLaunch 限制每次启动补做的历史图片数量。
+	// 每张要起一个 PowerShell 进程(约 1.5 秒),一次排太多会明显拖慢开机。
+	ocrBackfillPerLaunch = 20
+
 	quitGracePeriod = 1500 * time.Millisecond
 )
 
@@ -624,6 +756,8 @@ func (a *App) Quit() {
 // Cleanup 释放资源。可重复调用,内部用 Once 保证只执行一次。
 func (a *App) Cleanup() {
 	a.cleanupOnce.Do(func() {
+		// 先停 OCR:它持有数据库连接,必须在关库之前收尾
+		a.stopOCR()
 		if a.tray != nil {
 			a.tray.Close()
 		}
@@ -688,6 +822,12 @@ func (a *App) OnCaptured(c model.ClipContent) {
 	log.Printf("捕获 %s: %q (来源 %s, %d 字节)",
 		it.Kind, truncate(it.Preview, 40), orUnknown(it.SourceApp), it.ByteSize)
 
+	// 新图片投入后台识别队列,让截图里的文字也能被搜到。
+	// 只处理新建的条目:重复内容只是被提到最前,早已识别过。
+	if isNew && it.Kind == model.KindImage && it.BlobPath != "" {
+		a.enqueueOCR(store.PendingOCR{ID: it.ID, Path: it.BlobPath})
+	}
+
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "clip:new", it)
 	}
@@ -706,6 +846,14 @@ func truncate(s string, n int) string {
 func orUnknown(s string) string {
 	if s == "" {
 		return "未知"
+	}
+	return s
+}
+
+// orDash 用于日志里表示"首次运行、标记还不存在"。
+func orDash(s string) string {
+	if s == "" {
+		return "无"
 	}
 	return s
 }

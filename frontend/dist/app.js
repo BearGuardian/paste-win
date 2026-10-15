@@ -198,6 +198,16 @@
       img.onerror = () => { box.textContent = '图片已丢失'; };
       box.appendChild(img);
       card.appendChild(box);
+
+      // 识别出文字时盖在缩略图下方。截图类内容光看缩略图认不出是哪一张,
+      // 一行文字比"图片 800 × 600"有用得多。
+      if (item.ocrText) {
+        const ocr = document.createElement('div');
+        ocr.className = 'card-ocr';
+        ocr.textContent = item.ocrText.replace(/\s+/g, ' ').slice(0, 80);
+        ocr.title = item.ocrText;
+        card.appendChild(ocr);
+      }
     } else if (item.kind === 'files') {
       const box = document.createElement('div');
       box.className = 'card-body';

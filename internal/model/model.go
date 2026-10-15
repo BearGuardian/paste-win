@@ -32,6 +32,7 @@ type Item struct {
 	Content     string    `json:"content"`     // 主载荷:文本正文 / HTML 源 / 文件路径 JSON 数组
 	PlainText   string    `json:"plainText"`   // 纯文本表示,供搜索与「纯文本粘贴」使用
 	Preview     string    `json:"preview"`     // 卡片上显示的摘要
+	OCRText     string    `json:"ocrText"`     // 图片条目的 OCR 结果,供搜索与卡片显示
 	BlobPath    string    `json:"blobPath"`    // 图片 PNG 相对路径
 	ThumbPath   string    `json:"thumbPath"`   // 缩略图相对路径
 	SourceApp   string    `json:"sourceApp"`   // 来源进程名

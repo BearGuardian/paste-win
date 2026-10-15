@@ -352,6 +352,19 @@ select option { background: var(--bg-solid); }
   display: block;
 }
 
+/* OCR 出来的文字。缩略图占满剩余高度,所以这里只留一行,
+   多了会把卡片撑变形。完整内容在 title 里,悬停可见。 */
+.card-ocr {
+  flex: none;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, .62);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .file-list { display: flex; flex-direction: column; gap: 3px; }
 .file-row {
   display: flex;

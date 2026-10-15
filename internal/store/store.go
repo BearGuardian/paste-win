@@ -12,10 +12,15 @@ import (
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
+
+	"pastewin/internal/search"
 )
 
 // schemaVersion 记录当前表结构版本,用于后续迁移。
-const schemaVersion = 1
+//
+//	1 —— 初始表结构
+//	2 —— items 增加 ocr_text / search_text(见 DESIGN.md 11.5)
+const schemaVersion = 2
 
 // Store 是数据库句柄。并发安全由 database/sql 连接池保证。
 type Store struct {
@@ -79,7 +84,106 @@ func (s *Store) migrate() error {
 		return nil
 	}
 
-	ddl := []string{
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启迁移事务失败: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range schemaDDL {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("建表失败: %w\n语句: %s", err, stmt)
+		}
+	}
+
+	// v2:补三列。新库的 CREATE TABLE 里已经带了,所以先查再改 ——
+	// 已有库走 ALTER,新库这一步是空操作。
+	//
+	// ocr_done 必须与 ocr_text 分开:识别不出文字的图片,ocr_text 也是空,
+	// 只看 ocr_text 会把"识别过但没文字"误判成"还没识别",于是每次启动
+	// 都重新跑一遍 —— 每张约 1.5 秒的 PowerShell,代价不小。
+	if ver < 2 {
+		for _, col := range []struct{ name, ddl string }{
+			{"ocr_text", `ALTER TABLE items ADD COLUMN ocr_text TEXT NOT NULL DEFAULT ''`},
+			{"ocr_done", `ALTER TABLE items ADD COLUMN ocr_done INTEGER NOT NULL DEFAULT 0`},
+			{"search_text", `ALTER TABLE items ADD COLUMN search_text TEXT NOT NULL DEFAULT ''`},
+		} {
+			has, err := hasColumn(tx, "items", col.name)
+			if err != nil {
+				return err
+			}
+			if has {
+				continue
+			}
+			if _, err := tx.Exec(col.ddl); err != nil {
+				return fmt.Errorf("增加列 %s 失败: %w", col.name, err)
+			}
+		}
+		// 回填与建表放在同一个事务里:半途失败就整体回滚,
+		// 不会留下"列加好了但检索文本是空的"这种中间状态。
+		if err := backfillSearchText(tx); err != nil {
+			return err
+		}
+	}
+
+	// PRAGMA 不支持参数占位符,只能拼接;ver 是内部常量,无注入风险
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+		return fmt.Errorf("写入 schema 版本失败: %w", err)
+	}
+	return tx.Commit()
+}
+
+// hasColumn 判断表里是否已有某列。table 只传内部常量,不接用户输入。
+func hasColumn(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	if err != nil {
+		return false, fmt.Errorf("查询表结构失败: %w", err)
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		return true, nil
+	}
+	return false, rows.Err()
+}
+
+// backfillSearchText 为已有条目补算检索文本。
+//
+// 必须走 Go:拼音转换没法用纯 SQL 表达。条目上限 2000,整体是毫秒级的。
+func backfillSearchText(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT id, plain_text, preview, source_app, ocr_text FROM items`)
+	if err != nil {
+		return fmt.Errorf("读取待回填条目失败: %w", err)
+	}
+
+	type pending struct{ id, text string }
+	var todo []pending
+	for rows.Next() {
+		var id, plain, preview, app, ocr string
+		if err := rows.Scan(&id, &plain, &preview, &app, &ocr); err != nil {
+			rows.Close()
+			return fmt.Errorf("读取待回填条目失败: %w", err)
+		}
+		todo = append(todo, pending{id, search.Build(plain, ocr, app, preview)})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, p := range todo {
+		if _, err := tx.Exec(`UPDATE items SET search_text = ? WHERE id = ?`, p.text, p.id); err != nil {
+			return fmt.Errorf("回填检索文本失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// schemaDDL 是基础表结构。
+//
+// 全部 IF NOT EXISTS,重复执行无副作用 —— 迁移按版本号增量执行,
+// 但基础结构每次都跑一遍,省得为"新库"和"老库"维护两套语句。
+var schemaDDL = []string{
 		`CREATE TABLE IF NOT EXISTS pinboards (
 			id         TEXT PRIMARY KEY,
 			name       TEXT NOT NULL,
@@ -102,7 +206,10 @@ func (s *Store) migrate() error {
 			pinboard_id  TEXT REFERENCES pinboards(id) ON DELETE SET NULL,
 			created_at   INTEGER NOT NULL,
 			seq          INTEGER NOT NULL DEFAULT 0,
-			byte_size    INTEGER NOT NULL DEFAULT 0
+			byte_size    INTEGER NOT NULL DEFAULT 0,
+			ocr_text     TEXT NOT NULL DEFAULT '',
+			ocr_done     INTEGER NOT NULL DEFAULT 0,
+			search_text  TEXT NOT NULL DEFAULT ''
 		)`,
 
 		// 列表默认按时间倒序,这个索引同时服务排序与分页
@@ -120,23 +227,4 @@ func (s *Store) migrate() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`,
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("开启迁移事务失败: %w", err)
-	}
-	defer tx.Rollback()
-
-	for _, stmt := range ddl {
-		if _, err := tx.Exec(stmt); err != nil {
-			return fmt.Errorf("建表失败: %w\n语句: %s", err, stmt)
-		}
-	}
-
-	// PRAGMA 不支持参数占位符,只能拼接;ver 是内部常量,无注入风险
-	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
-		return fmt.Errorf("写入 schema 版本失败: %w", err)
-	}
-	return tx.Commit()
 }

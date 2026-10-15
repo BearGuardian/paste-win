@@ -20,6 +20,7 @@ import (
 	"pastewin/internal/exclusion"
 	"pastewin/internal/hotkey"
 	"pastewin/internal/model"
+	"pastewin/internal/ocr"
 	"pastewin/internal/paster"
 	"pastewin/internal/store"
 	"pastewin/internal/tray"
@@ -192,7 +193,15 @@ func run() error {
 	pstr := paster.New(bl)
 	pstr.SetIgnoreNextWrite(watcher.IgnoreNextWrite)
 
-	app := NewApp(st, bl, watcher, pstr, hotkeys, mw, excluded, settings)
+	// OCR 引擎不可用不阻塞启动:图片文字搜索降级为不可用,其余功能照常。
+	// 脚本会释放到数据目录,和数据库放在一起。
+	ocrEngine, err := ocr.New(dir)
+	if err != nil {
+		log.Printf("OCR 不可用,图片文字将无法搜索: %v", err)
+		ocrEngine = nil
+	}
+
+	app := NewApp(st, bl, watcher, pstr, hotkeys, mw, excluded, settings, ocrEngine)
 	appPtr = app
 
 	// 第二个实例启动时,把面板叫出来

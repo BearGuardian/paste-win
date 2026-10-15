@@ -10,10 +10,11 @@ import (
 	"github.com/google/uuid"
 
 	"pastewin/internal/model"
+	"pastewin/internal/search"
 )
 
 const itemCols = `id, kind, content, plain_text, preview, blob_path, thumb_path,
-	source_app, source_title, hash, pinned, pinboard_id, created_at, byte_size`
+	source_app, source_title, hash, pinned, pinboard_id, created_at, byte_size, ocr_text`
 
 // rowScanner 抽象 *sql.Row 与 *sql.Rows 的 Scan。
 type rowScanner interface {
@@ -31,7 +32,7 @@ func scanItem(sc rowScanner) (model.Item, error) {
 	err := sc.Scan(
 		&it.ID, &kind, &it.Content, &it.PlainText, &it.Preview,
 		&it.BlobPath, &it.ThumbPath, &it.SourceApp, &it.SourceTitle,
-		&it.Hash, &pinned, &pinboard, &created, &it.ByteSize,
+		&it.Hash, &pinned, &pinboard, &created, &it.ByteSize, &it.OCRText,
 	)
 	if err != nil {
 		return model.Item{}, err
@@ -93,12 +94,13 @@ func (s *Store) Insert(c model.ClipContent, blobPath, thumbPath string) (model.I
 	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO items (`+itemCols+`, seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?,
-		         (SELECT IFNULL(MAX(seq), 0) + 1 FROM items))`,
+		`INSERT INTO items (`+itemCols+`, seq, search_text)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?,
+		         (SELECT IFNULL(MAX(seq), 0) + 1 FROM items), ?)`,
 		it.ID, string(it.Kind), it.Content, it.PlainText, it.Preview,
 		it.BlobPath, it.ThumbPath, it.SourceApp, it.SourceTitle,
-		it.Hash, now, it.ByteSize,
+		it.Hash, now, it.ByteSize, it.OCRText,
+		search.Build(it.PlainText, it.OCRText, it.SourceApp, it.Preview),
 	)
 	if err != nil {
 		return model.Item{}, false, fmt.Errorf("插入条目失败: %w", err)
@@ -126,11 +128,16 @@ func (s *Store) List(f model.Filter) ([]model.Item, error) {
 	)
 
 	if kw := strings.TrimSpace(f.Keyword); kw != "" {
-		// 在纯文本、摘要、来源应用三处模糊匹配。
+		// 在纯文本、摘要、来源应用、检索文本四处模糊匹配。
 		// 转义 LIKE 通配符,否则用户搜 "100%" 会变成匹配任意内容。
+		//
+		// search_text 里存的是原文 + 拼音,所以拼音与首字母搜索走的是同一条路径,
+		// 查询侧不需要做任何转换(见 DESIGN.md 11.2)。
+		// SQLite 的 LIKE 对 ASCII 大小写不敏感,因此查询不必先转小写。
 		like := "%" + escapeLike(kw) + "%"
-		where = append(where, `(plain_text LIKE ? ESCAPE '\' OR preview LIKE ? ESCAPE '\' OR source_app LIKE ? ESCAPE '\')`)
-		args = append(args, like, like, like)
+		where = append(where, `(plain_text LIKE ? ESCAPE '\' OR preview LIKE ? ESCAPE '\'`+
+			` OR source_app LIKE ? ESCAPE '\' OR search_text LIKE ? ESCAPE '\')`)
+		args = append(args, like, like, like, like)
 	}
 	if f.Kind != "" {
 		where = append(where, `kind = ?`)
@@ -217,14 +224,76 @@ func (s *Store) UpdateContent(id, content string) error {
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("内容不能为空")
 	}
-	_, err := s.db.Exec(
-		`UPDATE items SET content = ?, plain_text = ?, preview = ?, byte_size = ? WHERE id = ?`,
-		content, content, previewOf(content), int64(len(content)), id,
+	it, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	// 检索文本要跟着一起刷新,否则改完就搜不到了。
+	// OCR 文本与来源应用不受编辑影响,原样带过去。
+	_, err = s.db.Exec(
+		`UPDATE items SET content = ?, plain_text = ?, preview = ?, byte_size = ?, search_text = ?
+		 WHERE id = ?`,
+		content, content, previewOf(content), int64(len(content)),
+		search.Build(content, it.OCRText, it.SourceApp, previewOf(content)), id,
 	)
 	if err != nil {
 		return fmt.Errorf("更新内容失败: %w", err)
 	}
 	return nil
+}
+
+// SetOCRText 写入图片条目的 OCR 结果,并刷新检索文本。
+//
+// 即便没识别出任何文字也要调用:它同时把 ocr_done 置位,
+// 否则这张图会在每次启动时被重新识别一遍。
+func (s *Store) SetOCRText(id, text string) error {
+	it, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`UPDATE items SET ocr_text = ?, ocr_done = 1, search_text = ? WHERE id = ?`,
+		text, search.Build(it.PlainText, text, it.SourceApp, it.Preview), id,
+	)
+	if err != nil {
+		return fmt.Errorf("写入 OCR 结果失败: %w", err)
+	}
+	return nil
+}
+
+// PendingOCR 是一条等待识别的图片。
+type PendingOCR struct {
+	ID   string
+	Path string // blob 相对路径
+}
+
+// ImagesNeedingOCR 返回尚未识别过的图片条目,新的优先。
+//
+// 新的优先是因为用户更可能去搜刚复制的东西;历史图片会在后台慢慢补完。
+// 判断依据是 ocr_done 而不是 ocr_text 是否为空 —— 见 SetOCRText 的说明。
+func (s *Store) ImagesNeedingOCR(limit int) ([]PendingOCR, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT id, blob_path FROM items
+		WHERE kind = ? AND ocr_done = 0 AND blob_path <> ''
+		ORDER BY seq DESC
+		LIMIT ?`, string(model.KindImage), limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询待识别图片失败: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PendingOCR
+	for rows.Next() {
+		var p PendingOCR
+		if err := rows.Scan(&p.ID, &p.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // MoveToPinboard 把条目移入分组;pinboardID 为空表示移出分组。
