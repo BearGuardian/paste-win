@@ -1,0 +1,21 @@
+# 构建产物:二进制、图标、Wails 中间产物
+build/
+*.exe
+
+# 运行时数据。默认落在 %LOCALAPPDATA%\PasteWin\,
+# 但允许用参数指到仓库里,别让剪贴板历史被提交上去。
+*.db
+*.db-shm
+*.db-wal
+*.log
+blobs/
+
+# 测试靶子写出的临时结果
+keytarget_result.txt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

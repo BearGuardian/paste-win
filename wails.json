@@ -1,0 +1,17 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "PasteWin",
+  "outputfilename": "PasteWin",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "PasteWin"
+  },
+  "info": {
+    "productName": "PasteWin",
+    "productVersion": "0.1.0",
+    "comments": "Windows 版 Paste 剪贴板管理器"
+  }
+}
