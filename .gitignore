@@ -2,13 +2,13 @@
 build/
 *.exe
 
-# 运行时数据。默认落在 %LOCALAPPDATA%\PasteWin\,
-# 但允许用参数指到仓库里,别让剪贴板历史被提交上去。
+# 运行时数据。默认落在 %LOCALAPPDATA%\PasteWin\,在仓库之外;
+# 这里只兜底那些可能被显式指到仓库里的产物。
+# 注意别写成 `blobs/`:那会连源码目录 internal/blobs 一起忽略掉。
 *.db
 *.db-shm
 *.db-wal
 *.log
-blobs/
 
 # 测试靶子写出的临时结果
 keytarget_result.txt

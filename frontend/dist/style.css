@@ -1,0 +1,590 @@
+/* PasteWin —— 复刻 Paste 的深色半透明卡片面板 */
+
+:root {
+  --bg: rgba(28, 28, 30, 0.78);
+  --bg-solid: #1c1c1e;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-hover: rgba(255, 255, 255, 0.11);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text: #f2f2f7;
+  --text-dim: #98989d;
+  --text-faint: #636366;
+
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --danger: #ff453a;
+  --pin: #ffd60a;
+
+  --radius-panel: 16px;
+  --radius-card: 12px;
+  --card-w: 208px;
+  --card-h: 128px;
+
+  --font: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC",
+          "Hiragino Sans GB", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* hidden 属性必须能盖住组件自身的 display 规则。
+   [hidden] 的 display:none 来自浏览器默认样式表,优先级最低 ——
+   下面 #editor/#settings/#empty 都写了 display:flex,会把它整个覆盖掉,
+   结果是这些元素"关不掉":弹层一直浮在面板上面挡住内容。 */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  /* 透明背景让 Wails 的亚克力模糊透出来 */
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--font);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+#panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border-top: 1px solid var(--border-strong);
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- 顶栏 */
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  /* 无边框窗口靠这条区域拖动 */
+  --wails-draggable: drag;
+}
+
+#search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 260px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+#search-icon {
+  position: absolute;
+  left: 10px;
+  width: 15px;
+  height: 15px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+#search {
+  width: 100%;
+  padding: 8px 30px 8px 32px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: none;
+  transition: border-color .15s, background .15s;
+}
+#search::placeholder { color: var(--text-faint); }
+#search:focus {
+  border-color: var(--accent);
+  background: rgba(10, 132, 255, 0.08);
+}
+
+#search-clear {
+  position: absolute;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+#search-clear:hover { background: var(--surface-hover); color: var(--text); }
+
+#filters {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+select {
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  cursor: pointer;
+}
+select option { background: var(--bg-solid); }
+
+#pinboard-tabs {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  --wails-draggable: no-drag;
+}
+#pinboard-tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.tab:hover { background: var(--surface-hover); color: var(--text); }
+.tab.active {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: rgba(10, 132, 255, 0.45);
+}
+.tab .count {
+  font-size: 10px;
+  padding: 1px 5px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+}
+.tab .tab-del {
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.tab:hover .tab-del { opacity: .6; }
+.tab .tab-del:hover { opacity: 1; color: var(--danger); }
+
+#topbar-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+#topbar-actions button {
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+#topbar-actions button:hover { background: var(--surface-hover); color: var(--text); }
+#topbar-actions button.active {
+  color: var(--pin);
+  border-color: rgba(255, 214, 10, 0.4);
+  background: rgba(255, 214, 10, 0.12);
+}
+
+/* ---------------------------------------------------------------- 卡片轨道 */
+
+#track-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+#track {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 这里刻意不设 scroll-behavior: smooth ——
+     滚轮滚动会被它变成动画,手感发飘。平滑只用在键盘导航上,
+     由 select() 里的 scrollIntoView 显式指定。 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,.18) transparent;
+  width: 100%;
+}
+#track::-webkit-scrollbar { height: 8px; }
+#track::-webkit-scrollbar-track { background: transparent; }
+#track::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .16);
+  border-radius: 4px;
+}
+
+.card {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--card-w);
+  height: var(--card-h);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 11px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform .13s ease, border-color .13s, background .13s, box-shadow .13s;
+  animation: card-in .22s ease backwards;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.card:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  transform: translateY(-3px);
+}
+
+.card.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  transform: translateY(-5px);
+  box-shadow: 0 8px 24px rgba(10, 132, 255, .28);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  flex-shrink: 0;
+}
+
+.badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  padding: 2px 6px;
+  border-radius: 5px;
+  text-transform: uppercase;
+  color: #fff;
+}
+.badge.text     { background: rgba(10, 132, 255, .8); }
+.badge.richtext { background: rgba(191, 90, 242, .8); }
+.badge.image    { background: rgba(48, 209, 88, .8); }
+.badge.files    { background: rgba(255, 159, 10, .8); }
+
+.card-app {
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.card-time {
+  font-size: 10px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.card-body {
+  flex: 1;
+  min-height: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 多行截断 */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+
+.card-body.mono {
+  font-family: "Cascadia Mono", Consolas, "SF Mono", monospace;
+  font-size: 11px;
+}
+
+.card-thumb {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, .28);
+}
+.card-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.file-list { display: flex; flex-direction: column; gap: 3px; }
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  overflow: hidden;
+}
+.file-row .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-row .more { color: var(--text-dim); font-size: 10px; }
+
+/* 卡片角标:置顶 / 序号 */
+.card-pin {
+  position: absolute;
+  top: 8px;
+  right: 9px;
+  font-size: 11px;
+  color: var(--pin);
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,.6));
+}
+
+.card-index {
+  position: absolute;
+  left: 9px;
+  bottom: 7px;
+  font-size: 10px;
+  color: var(--text-faint);
+  background: rgba(0, 0, 0, .45);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+
+/* 悬停时的操作按钮 */
+.card-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.card:hover .card-actions { opacity: 1; }
+
+.card-actions button {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(0, 0, 0, .55);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.card-actions button:hover { background: rgba(0, 0, 0, .8); }
+.card-actions button.del:hover { background: var(--danger); }
+
+/* 空状态 */
+#empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+}
+#empty-title { font-size: 14px; color: var(--text-dim); }
+#empty-hint  { font-size: 12px; color: var(--text-faint); }
+
+/* ---------------------------------------------------------------- 状态栏 */
+
+#statusbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#status-count { color: var(--text-dim); }
+#statusbar .sep { opacity: .4; }
+#statusbar .hint { display: inline-flex; align-items: center; gap: 3px; }
+
+kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+#status-toast {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 11px;
+  transition: opacity .2s;
+}
+
+/* ---------------------------------------------------------------- 浮层 */
+
+#editor, #settings {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(4px);
+  z-index: 50;
+}
+
+#editor-box, #settings-box {
+  width: min(560px, 88vw);
+  max-height: 84vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  background: var(--bg-solid);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .6);
+}
+
+#settings-box h2 { font-size: 15px; font-weight: 600; }
+
+#editor-text {
+  width: 100%;
+  min-height: 160px;
+  padding: 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: none;
+  resize: vertical;
+  user-select: text;
+}
+#editor-text:focus { border-color: var(--accent); }
+
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > span { font-size: 12px; color: var(--text-dim); }
+.field.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.field.checkbox > span { color: var(--text); }
+
+.field input[type="text"],
+.field input[type="number"],
+.field textarea {
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  user-select: text;
+}
+.field input:focus, .field textarea:focus { border-color: var(--accent); }
+.field textarea { resize: vertical; font-family: inherit; }
+
+#editor-actions, #settings-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+#settings-actions .spacer { flex: 1; }
+
+#editor-actions button, #settings-actions button {
+  padding: 8px 15px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+#editor-actions button:hover, #settings-actions button:hover {
+  background: var(--surface-hover);
+}
+#editor-actions button.primary, #settings-actions button.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+#editor-actions button.primary:hover,
+#settings-actions button.primary:hover { filter: brightness(1.1); }
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  padding: 9px 16px;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(0, 0, 0, .85);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  z-index: 100;
+  pointer-events: none;
+  animation: toast-in .18s ease;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}

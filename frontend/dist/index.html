@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PasteWin</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="panel">
+    <header id="topbar">
+      <div id="search-wrap">
+        <svg id="search-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <line x1="10" y1="10" x2="14" y2="14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+        <input id="search" type="text" placeholder="搜索剪贴板历史…" autocomplete="off" spellcheck="false" />
+        <button id="search-clear" type="button" title="清空" hidden>✕</button>
+      </div>
+
+      <div id="filters">
+        <select id="kind-filter" title="按类型筛选">
+          <option value="">全部类型</option>
+          <option value="text">文本</option>
+          <option value="richtext">富文本</option>
+          <option value="image">图片</option>
+          <option value="files">文件</option>
+        </select>
+        <select id="app-filter" title="按来源应用筛选">
+          <option value="">全部来源</option>
+        </select>
+      </div>
+
+      <div id="pinboard-tabs"></div>
+
+      <div id="topbar-actions">
+        <button id="btn-pause" type="button" title="暂停/恢复捕获">暂停</button>
+        <button id="btn-settings" type="button" title="设置">设置</button>
+      </div>
+    </header>
+
+    <main id="track-wrap">
+      <div id="track" role="listbox" aria-label="剪贴板历史"></div>
+      <div id="empty" hidden>
+        <p id="empty-title">还没有记录</p>
+        <p id="empty-hint">复制任意内容后回到这里</p>
+      </div>
+    </main>
+
+    <footer id="statusbar">
+      <span id="status-count">0 条</span>
+      <span class="sep">·</span>
+      <span class="hint"><kbd>←</kbd><kbd>→</kbd> 浏览</span>
+      <span class="hint"><kbd>Enter</kbd> 粘贴</span>
+      <span class="hint"><kbd>Shift</kbd>+<kbd>Enter</kbd> 纯文本</span>
+      <span class="hint"><kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>9</kbd> 快贴</span>
+      <span class="hint"><kbd>Ctrl</kbd>+<kbd>P</kbd> 置顶</span>
+      <span class="hint"><kbd>Del</kbd> 删除</span>
+      <span class="hint"><kbd>Esc</kbd> 关闭</span>
+      <span id="status-toast" hidden></span>
+    </footer>
+  </div>
+
+  <!-- 就地编辑 -->
+  <div id="editor" hidden>
+    <div id="editor-box">
+      <textarea id="editor-text" spellcheck="false"></textarea>
+      <div id="editor-actions">
+        <button id="editor-cancel" type="button">取消</button>
+        <button id="editor-save" type="button" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div id="settings" hidden>
+    <div id="settings-box">
+      <h2>设置</h2>
+
+      <label class="field">
+        <span>全局热键</span>
+        <input id="set-hotkey" type="text" placeholder="Ctrl+Shift+V" spellcheck="false" />
+      </label>
+
+      <label class="field">
+        <span>历史上限(条)</span>
+        <input id="set-maxitems" type="number" min="10" max="100000" />
+      </label>
+
+      <label class="field">
+        <span>面板高度(像素)</span>
+        <input id="set-panelheight" type="number" min="120" max="900" />
+      </label>
+
+      <label class="field checkbox">
+        <input id="set-autostart" type="checkbox" />
+        <span>开机自启</span>
+      </label>
+
+      <label class="field checkbox">
+        <input id="set-pasteplain" type="checkbox" />
+        <span>默认以纯文本粘贴</span>
+      </label>
+
+      <label class="field">
+        <span>排除的应用(每行一个进程名,这些应用复制的内容不记录)</span>
+        <textarea id="set-excluded" rows="4" spellcheck="false"
+                  placeholder="keepass&#10;1password"></textarea>
+      </label>
+
+      <div id="settings-actions">
+        <button id="settings-opendir" type="button">打开数据目录</button>
+        <span class="spacer"></span>
+        <button id="settings-cancel" type="button">取消</button>
+        <button id="settings-save" type="button" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
