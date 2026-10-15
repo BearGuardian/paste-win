@@ -54,9 +54,9 @@ func ProcessName(pid uint32) string {
 
 // ClipboardSource 描述剪贴板内容的来源。
 type ClipboardSource struct {
-	PID      uint32
-	App      string // 进程名,如 "chrome"
-	Title    string // 来源窗口标题
+	PID       uint32
+	App       string // 进程名,如 "chrome"
+	Title     string // 来源窗口标题
 	OwnerHWND uintptr
 }
 

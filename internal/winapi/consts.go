@@ -27,13 +27,13 @@ const (
 
 // 注册格式名。这些格式由 Windows 或应用在运行时注册,ID 不固定,需 RegisterClipboardFormat 查。
 const (
-	FmtHTML      = "HTML Format"
-	FmtRTF       = "Rich Text Format"
-	FmtPNG       = "PNG"
+	FmtHTML = "HTML Format"
+	FmtRTF  = "Rich Text Format"
+	FmtPNG  = "PNG"
 
 	// 密码管理器通行约定:应用把这两个格式写入剪贴板并置值为 0,
 	// 表示"请勿记录到剪贴板历史"。见 DESIGN.md 4.3.2。
-	FmtExcludeFromMonitor = "ExcludeClipboardContentFromMonitorProcessing"
+	FmtExcludeFromMonitor  = "ExcludeClipboardContentFromMonitorProcessing"
 	FmtCanIncludeInHistory = "CanIncludeInClipboardHistory"
 )
 
@@ -70,25 +70,25 @@ const (
 
 // SendInput 相关
 const (
-	INPUT_KEYBOARD   = 1
-	KEYEVENTF_KEYUP  = 0x0002
-	KEYEVENTF_UNICODE = 0x0004
+	INPUT_KEYBOARD     = 1
+	KEYEVENTF_KEYUP    = 0x0002
+	KEYEVENTF_UNICODE  = 0x0004
 	KEYEVENTF_SCANCODE = 0x0008
 )
 
 // 窗口显示状态
 const (
-	SW_HIDE        = 0
-	SW_SHOWNORMAL  = 1
-	SW_SHOW        = 5
-	SW_RESTORE     = 9
+	SW_HIDE           = 0
+	SW_SHOWNORMAL     = 1
+	SW_SHOW           = 5
+	SW_RESTORE        = 9
 	SW_SHOWNOACTIVATE = 4
 )
 
 // 窗口样式
 const (
-	WS_OVERLAPPED  = 0x00000000
-	WS_POPUP       = 0x80000000
+	WS_OVERLAPPED    = 0x00000000
+	WS_POPUP         = 0x80000000
 	WS_EX_TOOLWINDOW = 0x00000080 // 不出现在 Alt+Tab 和任务栏
 	WS_EX_NOACTIVATE = 0x08000000
 	WS_EX_TOPMOST    = 0x00000008
@@ -101,6 +101,6 @@ const (
 
 // 窗口置顶
 var (
-	HWND_TOPMOST   = ^uintptr(0)   // -1
+	HWND_TOPMOST   = ^uintptr(0)     // -1
 	HWND_NOTOPMOST = ^uintptr(0) - 1 // -2
 )

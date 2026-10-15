@@ -31,10 +31,12 @@ func ReadText() (string, error) {
 // ReadFileList 读取 CF_HDROP(资源管理器里复制的文件/文件夹)。
 //
 // 数据布局:DROPFILES 头 + 双 NUL 结尾的宽字符路径列表。
-//   DWORD pFiles   —— 路径列表相对数据起点的偏移
-//   POINT pt       —— 8 字节
-//   BOOL  fNC      —— 4 字节
-//   BOOL  fWide    —— 4 字节,TRUE 表示宽字符
+//
+//	DWORD pFiles   —— 路径列表相对数据起点的偏移
+//	POINT pt       —— 8 字节
+//	BOOL  fNC      —— 4 字节
+//	BOOL  fWide    —— 4 字节,TRUE 表示宽字符
+//
 // 头部共 20 字节。
 func ReadFileList() ([]string, error) {
 	raw, err := GetClipboardBytes(CF_HDROP)

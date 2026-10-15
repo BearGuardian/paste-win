@@ -152,7 +152,7 @@ func (w *MessageWindow) run() {
 	hwnd, _, callErr := procCreateWindowExW.Call(
 		WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE, // 不进 Alt+Tab,不抢焦点
 		uintptr(unsafe.Pointer(className)),
-		0,       // 无标题
+		0,        // 无标题
 		WS_POPUP, // 无边框
 		0, 0, 0, 0,
 		0, // 无父窗口
